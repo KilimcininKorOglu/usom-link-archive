@@ -1,7 +1,6 @@
 # USOM Zararlı URL Arşiv Botu
 
 [![Node.js](https://img.shields.io/badge/Node.js-18+-green.svg)](https://nodejs.org/)
-[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![USOM](https://img.shields.io/badge/Kaynak-USOM-red.svg)](https://www.usom.gov.tr/)
 
 USOM (Ulusal Siber Olaylara Müdahale Merkezi) API'sinden zararlı URL, domain ve IP adreslerini toplayan ve arşivleyen Node.js botu.
