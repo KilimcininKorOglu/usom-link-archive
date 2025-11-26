@@ -26,7 +26,8 @@ Kullanım:
   node usom-scraper.js [seçenek]
 
 Seçenekler:
-  --full                     Tüm arşivi çek (~444,000+ kayıt, ~9 saat)
+  --full                     Tüm arşivi çek
+  --resume                   Yarıda kalan indirmeye devam et
   --update                   Sadece yeni kayıtları çek (mevcut arşivi güncelle)
   --date <başlangıç>         Belirli tarihten bugüne kadar
   --date <başlangıç> <bitiş> Tarih aralığı
@@ -35,6 +36,7 @@ Tarih formatı: YYYY-MM-DD
 
 Örnekler:
   node usom-scraper.js --full
+  node usom-scraper.js --resume
   node usom-scraper.js --update
   node usom-scraper.js --date 2025-11-01
   node usom-scraper.js --date 2025-11-01 2025-11-26
@@ -51,6 +53,8 @@ let DATE_TO = null;
 for (let i = 0; i < args.length; i++) {
     if (args[i] === '--full') {
         MODE = 'full';
+    } else if (args[i] === '--resume') {
+        MODE = 'resume';
     } else if (args[i] === '--update') {
         MODE = 'update';
     } else if (args[i] === '--date') {
@@ -77,6 +81,26 @@ if (MODE === 'date' && !DATE_FROM) {
     process.exit(1);
 }
 
+// Resume modu için geçici dosya kontrolü
+const TEMP_FILE = 'usom-archive-temp.json';
+let resumeData = null;
+if (MODE === 'resume') {
+    if (!fs.existsSync(TEMP_FILE)) {
+        console.error('❌ Hata: Devam edilecek indirme bulunamadı.');
+        console.error(`   Geçici dosya (${TEMP_FILE}) mevcut değil.`);
+        console.error('   Yeni indirme başlatmak için: node usom-scraper.js --full');
+        process.exit(1);
+    }
+
+    console.log('📂 Yarıda kalan indirme okunuyor...');
+    const fileContent = fs.readFileSync(TEMP_FILE, 'utf8');
+    resumeData = JSON.parse(fileContent);
+
+    console.log(`📊 Kaldığı yer: Sayfa ${resumeData.lastBatch}`);
+    console.log(`   Mevcut kayıt: ${resumeData.totalCount.toLocaleString()}`);
+    console.log(`   Devam ediliyor...\n`);
+}
+
 // Update modu için mevcut arşivi oku
 let existingData = null;
 if (MODE === 'update') {
@@ -85,15 +109,15 @@ if (MODE === 'update') {
         console.error(`   Önce --full ile arşivi oluşturun: node usom-scraper.js --full`);
         process.exit(1);
     }
-    
+
     console.log('📂 Mevcut arşiv okunuyor...');
     const fileContent = fs.readFileSync(OUTPUT_FILE, 'utf8');
     existingData = JSON.parse(fileContent);
-    
+
     // En son kaydın tarihini bul
     if (existingData.models && existingData.models.length > 0) {
         // Tarihe göre sırala ve en yenisini al
-        const sortedModels = existingData.models.sort((a, b) => 
+        const sortedModels = existingData.models.sort((a, b) =>
             new Date(b.date) - new Date(a.date)
         );
         const lastDate = sortedModels[0].date.split(' ')[0]; // "2025-11-26 16:09:34" -> "2025-11-26"
@@ -115,7 +139,7 @@ function buildUrl(page) {
 function fetchPage(page) {
     return new Promise((resolve, reject) => {
         const url = buildUrl(page);
-        
+
         const options = {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:145.0) Gecko/20100101 Firefox/145.0',
@@ -128,24 +152,24 @@ function fetchPage(page) {
 
         https.get(url, options, (res) => {
             let data = '';
-            
+
             res.on('data', (chunk) => {
                 data += chunk;
             });
-            
+
             res.on('end', () => {
                 // Rate limit veya hata sayfası kontrolü
                 if (res.statusCode !== 200) {
                     reject(new Error(`HTTP ${res.statusCode} sayfa ${page}`));
                     return;
                 }
-                
+
                 // HTML döndüyse rate limit var demektir
                 if (data.trim().startsWith('<')) {
                     reject(new Error(`Rate limit sayfa ${page}`));
                     return;
                 }
-                
+
                 try {
                     const json = JSON.parse(data);
                     resolve(json);
@@ -171,10 +195,10 @@ async function fetchPageWithRetry(page) {
             let waitTime;
             if (err.message.includes('429') || err.message.includes('Rate limit')) {
                 waitTime = Math.min(5000 * attempt, 30000); // Maksimum 30 saniye
-                process.stdout.write(`\n   ⏳ Sayfa ${page} - Rate limit (deneme ${attempt}) - ${waitTime/1000}s bekleniyor...`);
+                process.stdout.write(`\n   ⏳ Sayfa ${page} - Rate limit (deneme ${attempt}) - ${waitTime / 1000}s bekleniyor...`);
             } else {
                 waitTime = Math.min(3000 * attempt, 15000); // Maksimum 15 saniye
-                process.stdout.write(`\n   ⚠️ Sayfa ${page} - ${err.message} (deneme ${attempt}) - ${waitTime/1000}s bekleniyor...`);
+                process.stdout.write(`\n   ⚠️ Sayfa ${page} - ${err.message} (deneme ${attempt}) - ${waitTime / 1000}s bekleniyor...`);
             }
             await sleep(waitTime);
         }
@@ -204,7 +228,7 @@ function showProgress(current, total, startTime) {
     const percent = ((current / total) * 100).toFixed(1);
     const elapsedSec = Math.floor((Date.now() - startTime) / 1000);
     const etaSec = current > 0 ? Math.floor((elapsedSec / current) * (total - current)) : 0;
-    
+
     process.stdout.write(`\r[${current}/${total}] %${percent} | Geçen: ${formatTime(elapsedSec)} | Kalan: ${formatTime(etaSec)}    `);
 }
 
@@ -219,15 +243,15 @@ async function main() {
     console.log('='.repeat(60));
     console.log('USOM Zararlı URL Arşiv Botu');
     console.log('='.repeat(60));
-    
+
     try {
         // İlk sayfayı al ve toplam sayfa sayısını öğren
         console.log('\n📡 İlk sayfa alınıyor...');
         const firstPage = await fetchPage(0);
-        
+
         const totalCount = firstPage.totalCount;
         const pageCount = firstPage.pageCount;
-        
+
         console.log(`\n📊 İstatistikler:`);
         console.log(`   - Toplam kayıt: ${totalCount.toLocaleString()}`);
         console.log(`   - Toplam sayfa: ${pageCount.toLocaleString()}`);
@@ -237,7 +261,7 @@ async function main() {
             console.log(`   - Tarih filtresi: ${fromText} → ${toText}`);
         }
         console.log(`   - Paralel istek: ${PARALLEL_REQUESTS}`);
-        
+
         // Tahmini süreyi hesapla ve formatla
         const estimatedMinutes = Math.ceil((pageCount / PARALLEL_REQUESTS) * DELAY_MS / 1000 / 60);
         let estimatedTimeText;
@@ -249,69 +273,79 @@ async function main() {
             estimatedTimeText = `${estimatedMinutes} dakika`;
         }
         console.log(`   - Tahmini süre: ~${estimatedTimeText}`);
-        
+
         // Tüm verileri toplayacağımız dizi
-        let allModels = [...firstPage.models];
-        
-        console.log(`\n🚀 Tarama başlıyor...\n`);
+        let allModels = [];
+        let startBatch = 1;
+
+        // Resume modunda kaldığı yerden devam et
+        if (MODE === 'resume' && resumeData) {
+            allModels = resumeData.models;
+            startBatch = resumeData.lastBatch + 1;
+            console.log(`\n🔄 Sayfa ${startBatch}'den devam ediliyor...\n`);
+        } else {
+            allModels = [...firstPage.models];
+            console.log(`\n🚀 Tarama başlıyor...\n`);
+        }
+
         const startTime = Date.now();
-        
-        // Tüm sayfaları toplu halde tara (sayfa 1'den başla, 0 zaten alındı)
-        for (let batchStart = 1; batchStart < pageCount; batchStart += PARALLEL_REQUESTS) {
+
+        // Tüm sayfaları toplu halde tara
+        for (let batchStart = startBatch; batchStart < pageCount; batchStart += PARALLEL_REQUESTS) {
             // Bu toplu istek için sayfa numaralarını oluştur
             const batchPages = [];
             for (let i = 0; i < PARALLEL_REQUESTS && (batchStart + i) < pageCount; i++) {
                 batchPages.push(batchStart + i);
             }
-            
+
             // İstekleri yap
             const results = await fetchBatch(batchPages);
-            
+
             // Sonuçları işle (artık hepsi başarılı)
             for (const result of results) {
                 allModels = allModels.concat(result.models);
             }
-            
+
             // İlerlemeyi göster
             const currentPage = Math.min(batchStart + PARALLEL_REQUESTS, pageCount);
             showProgress(currentPage, pageCount, startTime);
-            
+
             // Her SAVE_INTERVAL değeri kadar sayfada bir kaydet (veri kaybını önlemek için)
             if (batchStart % SAVE_INTERVAL < PARALLEL_REQUESTS) {
-                const tempFile = `usom-archive-temp.json`;
-                fs.writeFileSync(tempFile, JSON.stringify({
+                fs.writeFileSync(TEMP_FILE, JSON.stringify({
                     exportDate: new Date().toISOString(),
                     totalCount: allModels.length,
                     lastBatch: batchStart,
+                    pageCount: pageCount,
                     models: allModels
                 }, null, 2));
             }
-            
+
             // İstekler arası bekleme
             await sleep(DELAY_MS);
         }
-        
+
         // Update modunda yeni kayıtları mevcut arşive ekle
         let finalModels = allModels;
         let newRecordsCount = allModels.length;
-        
+
         if (MODE === 'update' && existingData) {
             // Mevcut ID'leri set olarak al (hızlı arama için)
             const existingIds = new Set(existingData.models.map(m => m.id));
-            
+
             // Sadece yeni kayıtları filtrele
             const newModels = allModels.filter(m => !existingIds.has(m.id));
             newRecordsCount = newModels.length;
-            
+
             // Yeni kayıtları mevcut verilerin başına ekle (en yeniler üstte)
             finalModels = [...newModels, ...existingData.models];
-            
+
             console.log(`\n\n📊 Güncelleme özeti:`);
             console.log(`   - Yeni kayıt: ${newRecordsCount.toLocaleString()}`);
             console.log(`   - Mevcut kayıt: ${existingData.models.length.toLocaleString()}`);
             console.log(`   - Toplam kayıt: ${finalModels.length.toLocaleString()}`);
         }
-        
+
         // Sonuçları kaydet
         const result = {
             exportDate: new Date().toISOString(),
@@ -325,17 +359,17 @@ async function main() {
             pageCount: pageCount,
             models: finalModels
         };
-        
+
         console.log(`\n\n💾 Dosya kaydediliyor: ${OUTPUT_FILE}`);
         fs.writeFileSync(OUTPUT_FILE, JSON.stringify(result, null, 2));
-        
+
         // Geçici dosyayı temizle
-        if (fs.existsSync('usom-archive-temp.json')) {
-            fs.unlinkSync('usom-archive-temp.json');
+        if (fs.existsSync(TEMP_FILE)) {
+            fs.unlinkSync(TEMP_FILE);
         }
-        
+
         const totalTime = ((Date.now() - startTime) / 1000 / 60).toFixed(2);
-        
+
         console.log('\n' + '='.repeat(60));
         console.log('✅ TAMAMLANDI!');
         console.log('='.repeat(60));
@@ -348,7 +382,7 @@ async function main() {
         }
         console.log(`⏱️  Toplam süre: ${totalTime} dakika`);
         console.log(`📦 Dosya boyutu: ${(fs.statSync(OUTPUT_FILE).size / 1024 / 1024).toFixed(2)} MB`);
-        
+
     } catch (err) {
         console.error('\n❌ Kritik hata:', err.message);
         process.exit(1);
