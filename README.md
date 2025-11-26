@@ -18,7 +18,7 @@ USOM (Ulusal Siber Olaylara Müdahale Merkezi) API'sinden zararlı URL, domain v
 ## 📦 Kurulum
 
 ```bash
-git clone https://github.com/kullanici/usom-link-archive.git
+git clone https://github.com/KilimcininKorOglu/usom-link-archive.git
 cd usom-link-archive
 ```
 
