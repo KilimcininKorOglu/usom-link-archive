@@ -9,6 +9,7 @@ USOM (Ulusal Siber Olaylara Müdahale Merkezi) API'sinden zararlı URL, domain v
 ## 🚀 Özellikler
 
 - **Tam Arşiv**: 444,000+ zararlı URL kaydını tek seferde indir
+- **Devam Ettirme**: Yarıda kalan indirmeyi kaldığı yerden devam ettir
 - **Akıllı Güncelleme**: Sadece yeni kayıtları çek, mevcut arşivi koru
 - **Tarih Filtresi**: Belirli tarih aralığındaki kayıtları çek
 - **Rate Limit Yönetimi**: HTTP 429 hatalarını otomatik algıla ve bekle
@@ -32,6 +33,9 @@ node usom-scraper.js
 
 # Tüm arşivi çek (~444,000+ kayıt, ~9 saat)
 node usom-scraper.js --full
+
+# Yarıda kalan indirmeye devam et
+node usom-scraper.js --resume
 
 # Mevcut arşivi güncelle (sadece yeni kayıtlar)
 node usom-scraper.js --update
@@ -98,6 +102,7 @@ const OUTPUT_FILE = 'usom-archive.json';
 | Mod | Tahmini Süre | Kayıt Sayısı |
 |-----|--------------|--------------|
 | `--full` | ~9 saat | ~444,000+ |
+| `--resume` | Kaldığı yerden | Değişir |
 | `--update` | Birkaç dakika | Değişir |
 | `--date` (1 ay) | ~10-30 dakika | ~5,000-15,000 |
 
@@ -107,6 +112,12 @@ const OUTPUT_FILE = 'usom-archive.json';
 
 ```bash
 node usom-scraper.js --full
+```
+
+Yarıda kaldıysa devam et:
+
+```bash
+node usom-scraper.js --resume
 ```
 
 Günlük/haftalık güncelleme:
