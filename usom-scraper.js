@@ -186,13 +186,26 @@ function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+// Saniyeyi okunabilir formata çevir
+function formatTime(seconds) {
+    if (seconds < 60) return `${seconds}s`;
+    if (seconds < 3600) {
+        const m = Math.floor(seconds / 60);
+        const s = seconds % 60;
+        return `${m}dk ${s}s`;
+    }
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    return `${h}sa ${m}dk`;
+}
+
 // İlerleme çubuğu göster
 function showProgress(current, total, startTime) {
     const percent = ((current / total) * 100).toFixed(1);
-    const elapsed = ((Date.now() - startTime) / 1000).toFixed(0);
-    const eta = current > 0 ? ((elapsed / current) * (total - current)).toFixed(0) : '?';
+    const elapsedSec = Math.floor((Date.now() - startTime) / 1000);
+    const etaSec = current > 0 ? Math.floor((elapsedSec / current) * (total - current)) : 0;
     
-    process.stdout.write(`\r[${current}/${total}] %${percent} tamamlandı | Geçen: ${elapsed}s | Kalan: ${eta}s    `);
+    process.stdout.write(`\r[${current}/${total}] %${percent} | Geçen: ${formatTime(elapsedSec)} | Kalan: ${formatTime(etaSec)}    `);
 }
 
 // Toplu istek işlemi (başarılı olana kadar dener, hata atmaz)
