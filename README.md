@@ -186,6 +186,7 @@ TELEGRAM_CHAT_ID=123456789
 | Generic | `generic` | Herhangi bir webhook URL'i |
 
 **Bildirim içeriği:**
+
 - ✅ Tamamlanma: Yeni kayıt sayısı, atlanan, toplam, süre
 - ❌ Hata: Hata mesajı
 - ⚠️ Durduruldu: CTRL+C ile durdurulduğunda
