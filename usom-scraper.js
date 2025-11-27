@@ -63,6 +63,171 @@ const INTERFACES = env.INTERFACES
     ? env.INTERFACES.split(',').map(ip => ip.trim()).filter(ip => ip)
     : [];
 
+// Webhook yapılandırması
+const WEBHOOK_URL = env.WEBHOOK_URL || '';
+const WEBHOOK_TYPE = (env.WEBHOOK_TYPE || 'generic').toLowerCase(); // generic, telegram, discord
+const TELEGRAM_CHAT_ID = env.TELEGRAM_CHAT_ID || '';
+
+// ============================================================================
+// WEBHOOK BİLDİRİM SİSTEMİ
+// ============================================================================
+
+class WebhookNotifier {
+    constructor(url, type, options = {}) {
+        this.url = url;
+        this.type = type;
+        this.chatId = options.chatId || '';
+        this.enabled = !!url;
+    }
+
+    // HTTP POST isteği gönder
+    _post(url, data) {
+        return new Promise((resolve, reject) => {
+            const urlObj = new URL(url);
+            const postData = JSON.stringify(data);
+
+            const options = {
+                hostname: urlObj.hostname,
+                port: urlObj.port || (urlObj.protocol === 'https:' ? 443 : 80),
+                path: urlObj.pathname + urlObj.search,
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Content-Length': Buffer.byteLength(postData)
+                }
+            };
+
+            const protocol = urlObj.protocol === 'https:' ? https : require('http');
+            const req = protocol.request(options, (res) => {
+                let body = '';
+                res.on('data', chunk => body += chunk);
+                res.on('end', () => {
+                    if (res.statusCode >= 200 && res.statusCode < 300) {
+                        resolve({ status: res.statusCode, body });
+                    } else {
+                        reject(new Error(`HTTP ${res.statusCode}: ${body}`));
+                    }
+                });
+            });
+
+            req.on('error', reject);
+            req.write(postData);
+            req.end();
+        });
+    }
+
+    // Telegram formatında mesaj oluştur
+    _formatTelegram(title, message, stats) {
+        let text = `🔔 *${this._escapeMarkdown(title)}*\n\n`;
+        text += `${this._escapeMarkdown(message)}\n\n`;
+        if (stats) {
+            text += `📊 *İstatistikler:*\n`;
+            text += `• Yeni kayıt: \`${stats.added.toLocaleString()}\`\n`;
+            text += `• Atlanan: \`${stats.skipped.toLocaleString()}\`\n`;
+            text += `• Toplam: \`${stats.total.toLocaleString()}\`\n`;
+            if (stats.duration) text += `• Süre: \`${stats.duration}\`\n`;
+        }
+        return text;
+    }
+
+    // Telegram Markdown escape
+    _escapeMarkdown(text) {
+        return text.replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&');
+    }
+
+    // Discord embed formatı
+    _formatDiscord(title, message, stats) {
+        const embed = {
+            title: `🔔 ${title}`,
+            description: message,
+            color: 0x00ff00, // Yeşil
+            timestamp: new Date().toISOString()
+        };
+
+        if (stats) {
+            embed.fields = [
+                { name: '📥 Yeni Kayıt', value: stats.added.toLocaleString(), inline: true },
+                { name: '⏭️ Atlanan', value: stats.skipped.toLocaleString(), inline: true },
+                { name: '📊 Toplam', value: stats.total.toLocaleString(), inline: true }
+            ];
+            if (stats.duration) {
+                embed.fields.push({ name: '⏱️ Süre', value: stats.duration, inline: true });
+            }
+        }
+
+        return { embeds: [embed] };
+    }
+
+    // Generic webhook formatı
+    _formatGeneric(title, message, stats) {
+        return {
+            event: 'usom_scraper',
+            title,
+            message,
+            stats,
+            timestamp: new Date().toISOString()
+        };
+    }
+
+    // Bildirim gönder
+    async send(title, message, stats = null) {
+        if (!this.enabled) return false;
+
+        try {
+            let payload;
+            let url = this.url;
+
+            switch (this.type) {
+                case 'telegram':
+                    // Telegram Bot API formatı
+                    payload = {
+                        chat_id: this.chatId,
+                        text: this._formatTelegram(title, message, stats),
+                        parse_mode: 'MarkdownV2'
+                    };
+                    break;
+
+                case 'discord':
+                    payload = this._formatDiscord(title, message, stats);
+                    break;
+
+                default: // generic
+                    payload = this._formatGeneric(title, message, stats);
+            }
+
+            await this._post(url, payload);
+            return true;
+        } catch (err) {
+            // Webhook hatası sessizce logla, ana işlemi durdurma
+            console.error(`\n   ⚠️ Webhook hatası: ${err.message}`);
+            return false;
+        }
+    }
+
+    // Başarılı tamamlanma bildirimi
+    async notifyComplete(stats) {
+        return this.send(
+            'USOM Tarama Tamamlandı',
+            `Tarama başarıyla tamamlandı.`,
+            stats
+        );
+    }
+
+    // Hata bildirimi
+    async notifyError(error) {
+        return this.send(
+            'USOM Tarama Hatası',
+            `Kritik hata oluştu: ${error.message}`,
+            null
+        );
+    }
+}
+
+// Global webhook instance
+const webhook = new WebhookNotifier(WEBHOOK_URL, WEBHOOK_TYPE, {
+    chatId: TELEGRAM_CHAT_ID
+});
+
 // ============================================================================
 // REDIS CLIENT (RESP Protokolü - Harici Bağımlılık Yok)
 // ============================================================================
@@ -1123,8 +1288,18 @@ async function main() {
             console.log(`📦 Dosya boyutu: ${(fs.statSync(OUTPUT_FILE).size / 1024 / 1024).toFixed(2)} MB`);
         }
 
+        // Webhook bildirimi gönder
+        await webhook.notifyComplete({
+            added: finalStats.added,
+            skipped: finalStats.skipped,
+            total: finalCount,
+            duration: `${totalTime} dakika`
+        });
+
     } catch (err) {
         console.error('\n❌ Kritik hata:', err.message);
+        // Hata bildirimi gönder
+        await webhook.notifyError(err);
         process.exit(1);
     } finally {
         await storage.close();
