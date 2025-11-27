@@ -59,9 +59,17 @@ for (let i = 0; i < args.length; i++) {
         MODE = 'update';
     } else if (args[i] === '--date') {
         MODE = 'date';
-        DATE_FROM = args[i + 1] || null;
-        DATE_TO = args[i + 2] || null;
-        i += DATE_TO ? 2 : 1;
+        // BUG-003 FIX: Tarih değerlerini doğrula, -- ile başlayanları kabul etme
+        const nextArg = args[i + 1];
+        const nextNextArg = args[i + 2];
+        if (nextArg && !nextArg.startsWith('--')) {
+            DATE_FROM = nextArg;
+            i++;
+            if (nextNextArg && !nextNextArg.startsWith('--')) {
+                DATE_TO = nextNextArg;
+                i++;
+            }
+        }
     } else if (args[i] === '--help' || args[i] === '-h') {
         showHelp();
         process.exit(0);
@@ -93,8 +101,16 @@ if (MODE === 'resume') {
     }
 
     console.log('📂 Yarıda kalan indirme okunuyor...');
-    const fileContent = fs.readFileSync(TEMP_FILE, 'utf8');
-    resumeData = JSON.parse(fileContent);
+    // BUG-004 FIX: JSON parse hatası için try-catch ekle
+    try {
+        const fileContent = fs.readFileSync(TEMP_FILE, 'utf8');
+        resumeData = JSON.parse(fileContent);
+    } catch (err) {
+        console.error('❌ Hata: Geçici dosya bozuk veya okunamıyor.');
+        console.error(`   ${err.message}`);
+        console.error('   Yeni indirme başlatmak için: node usom-scraper.js --full');
+        process.exit(1);
+    }
 
     console.log(`📊 Kaldığı yer: Sayfa ${resumeData.lastBatch}`);
     console.log(`   Mevcut kayıt: ${resumeData.totalCount.toLocaleString()}`);
@@ -111,13 +127,21 @@ if (MODE === 'update') {
     }
 
     console.log('📂 Mevcut arşiv okunuyor...');
-    const fileContent = fs.readFileSync(OUTPUT_FILE, 'utf8');
-    existingData = JSON.parse(fileContent);
+    // BUG-005 FIX: JSON parse hatası için try-catch ekle
+    try {
+        const fileContent = fs.readFileSync(OUTPUT_FILE, 'utf8');
+        existingData = JSON.parse(fileContent);
+    } catch (err) {
+        console.error('❌ Hata: Arşiv dosyası bozuk veya okunamıyor.');
+        console.error(`   ${err.message}`);
+        console.error('   Yeni arşiv oluşturmak için: node usom-scraper.js --full');
+        process.exit(1);
+    }
 
     // En son kaydın tarihini bul
     if (existingData.models && existingData.models.length > 0) {
-        // Tarihe göre sırala ve en yenisini al
-        const sortedModels = existingData.models.sort((a, b) =>
+        // BUG-001 FIX: Orijinal diziyi mutasyona uğratma, kopya oluştur
+        const sortedModels = [...existingData.models].sort((a, b) =>
             new Date(b.date) - new Date(a.date)
         );
         const lastDate = sortedModels[0].date.split(' ')[0]; // "2025-11-26 16:09:34" -> "2025-11-26"
@@ -247,7 +271,8 @@ async function main() {
     try {
         // İlk sayfayı al ve toplam sayfa sayısını öğren
         console.log('\n📡 İlk sayfa alınıyor...');
-        const firstPage = await fetchPage(0);
+        // BUG-002 FIX: İlk sayfa için de retry mekanizması kullan
+        const firstPage = await fetchPageWithRetry(0);
 
         const totalCount = firstPage.totalCount;
         const pageCount = firstPage.pageCount;
@@ -363,8 +388,8 @@ async function main() {
         console.log(`\n\n💾 Dosya kaydediliyor: ${OUTPUT_FILE}`);
         fs.writeFileSync(OUTPUT_FILE, JSON.stringify(result, null, 2));
 
-        // Geçici dosyayı temizle
-        if (fs.existsSync(TEMP_FILE)) {
+        // BUG-006 FIX: Geçici dosyayı sadece full/resume modlarında temizle
+        if ((MODE === 'full' || MODE === 'resume') && fs.existsSync(TEMP_FILE)) {
             fs.unlinkSync(TEMP_FILE);
         }
 
