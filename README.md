@@ -140,7 +140,7 @@ USOM API'si rate limiting uygulamaktadır. Bot otomatik olarak:
 usom-link-archive/
 ├── usom-scraper.js        # Ana bot
 ├── usom-archive.json      # Çıktı dosyası (oluşturulur)
-├── usom-archive-temp.json # Geçici dosya (--resume için)
+├── usom-archive-temp.json # Geçici dosya (--resume için, tamamlanınca silinir)
 └── README.md
 ```
 
