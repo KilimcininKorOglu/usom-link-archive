@@ -17,22 +17,22 @@ const path = require('path');
 function loadEnv() {
     const envPath = path.join(__dirname, '.env');
     if (!fs.existsSync(envPath)) return {};
-    
+
     const env = {};
     const content = fs.readFileSync(envPath, 'utf8');
-    
+
     for (const line of content.split('\n')) {
         const trimmed = line.trim();
         if (!trimmed || trimmed.startsWith('#')) continue;
-        
+
         const eqIndex = trimmed.indexOf('=');
         if (eqIndex === -1) continue;
-        
+
         const key = trimmed.substring(0, eqIndex).trim();
         const value = trimmed.substring(eqIndex + 1).trim();
         env[key] = value;
     }
-    
+
     return env;
 }
 
@@ -59,7 +59,7 @@ const REDIS_TLS = env.REDIS_TLS === 'true';
 const REDIS_KEY_PREFIX = env.REDIS_KEY_PREFIX || 'usom:';
 
 // Network interface'leri
-const INTERFACES = env.INTERFACES 
+const INTERFACES = env.INTERFACES
     ? env.INTERFACES.split(',').map(ip => ip.trim()).filter(ip => ip)
     : [];
 
@@ -94,7 +94,7 @@ class SimpleRedisClient {
     _parseResponse(data) {
         const type = data[0];
         const content = data.slice(1);
-        
+
         switch (type) {
             case '+': // Simple string
                 return content.split('\r\n')[0];
@@ -127,7 +127,7 @@ class SimpleRedisClient {
     _parseSingleResponse(data) {
         const type = data[0];
         const content = data.slice(1);
-        
+
         switch (type) {
             case '+': {
                 const end = content.indexOf('\r\n');
@@ -169,7 +169,7 @@ class SimpleRedisClient {
     async connect() {
         return new Promise((resolve, reject) => {
             const connectOptions = { host: this.host, port: this.port };
-            
+
             if (this.useTls) {
                 this.socket = tls.connect(connectOptions, () => {
                     this.connected = true;
@@ -438,7 +438,7 @@ class RedisStorage {
 
     async addRecord(record) {
         const id = record.id;
-        
+
         // Duplicate kontrolü
         if (await this.exists(id)) {
             this.stats.skipped++;
@@ -528,6 +528,58 @@ class RedisStorage {
             await this.client.del(...keys);
         }
         return keys ? keys.length : 0;
+    }
+
+    // Redis'ten tüm kayıtları çek ve JSON dosyasına export et
+    async exportToFile(outputFile, showProgress = null) {
+        const ids = await this.client.smembers(`${this.prefix}ids`);
+        if (!ids || ids.length === 0) {
+            return { count: 0, file: outputFile };
+        }
+
+        const totalCount = ids.length;
+        const records = [];
+        const startTime = Date.now();
+
+        for (let i = 0; i < ids.length; i++) {
+            const id = ids[i];
+            const record = await this.client.hgetall(`${this.prefix}record:${id}`);
+            if (record) {
+                // Tipleri düzelt
+                record.id = parseInt(record.id, 10);
+                record.criticality_level = parseInt(record.criticality_level, 10) || 0;
+                records.push(record);
+            }
+
+            // Progress göster
+            if (showProgress && (i + 1) % 1000 === 0) {
+                const percent = (((i + 1) / totalCount) * 100).toFixed(1);
+                const elapsedSec = Math.floor((Date.now() - startTime) / 1000);
+                process.stdout.write(`\r   [${i + 1}/${totalCount}] %${percent} | Geçen: ${elapsedSec}s    `);
+            }
+        }
+
+        // Tarihe göre sırala (en yeniler başta)
+        records.sort((a, b) => new Date(b.date) - new Date(a.date));
+
+        // Metadata'yı al
+        const metaStr = await this.client.get(`${this.prefix}meta`);
+        const meta = metaStr ? JSON.parse(metaStr) : {};
+
+        // JSON dosyasına kaydet
+        const result = {
+            exportDate: new Date().toISOString(),
+            source: meta.source || 'USOM - Ulusal Siber Olaylara Müdahale Merkezi',
+            apiUrl: meta.apiUrl || BASE_URL,
+            dateFilter: meta.dateFilter || { from: null, to: null },
+            totalCount: records.length,
+            pageCount: meta.pageCount || 0,
+            models: records
+        };
+
+        fs.writeFileSync(outputFile, JSON.stringify(result, null, 2));
+
+        return { count: records.length, file: outputFile };
     }
 
     async close() {
@@ -651,7 +703,7 @@ function fetchPage(page, localAddress, dateFrom, dateTo) {
 async function fetchPageWithRetry(page, dateFrom, dateTo) {
     let attempt = 0;
     const localAddress = getNextInterface();
-    
+
     while (true) {
         attempt++;
         try {
@@ -687,7 +739,7 @@ function showProgress(current, total, startTime, pageIpMap, stats) {
     const etaSec = current > 0 ? Math.floor((elapsedSec / current) * (total - current)) : 0;
 
     let output = `\r[${current}/${total}] %${percent} | Geçen: ${formatTime(elapsedSec)} | Kalan: ${formatTime(etaSec)}`;
-    
+
     // Sayfa-IP eşleşmeleri
     if (pageIpMap && pageIpMap.length > 0 && pageIpMap[0].ip) {
         const ipMappings = pageIpMap.map(m => `${m.page}→${shortIp(m.ip)}`).join(', ');
@@ -698,7 +750,7 @@ function showProgress(current, total, startTime, pageIpMap, stats) {
     if (stats) {
         output += ` | Yeni: ${stats.added}, Atlandı: ${stats.skipped}`;
     }
-    
+
     output += '    ';
     process.stdout.write(output);
 }
@@ -722,6 +774,7 @@ Seçenekler:
   --update                   Sadece yeni kayıtları çek
   --date <başlangıç>         Belirli tarihten bugüne kadar
   --date <başlangıç> <bitiş> Tarih aralığı
+  --export [dosya]           Redis'ten JSON dosyasına export et
   --clear-redis              Redis'teki tüm USOM verilerini sil
 
 Tarih formatı: YYYY-MM-DD
@@ -731,6 +784,8 @@ Tarih formatı: YYYY-MM-DD
   node usom-scraper.js --resume
   node usom-scraper.js --update
   node usom-scraper.js --date 2025-11-01
+  node usom-scraper.js --export                    # ${OUTPUT_FILE} dosyasına
+  node usom-scraper.js --export my-archive.json    # Belirtilen dosyaya
   node usom-scraper.js --clear-redis
 
 Çıktı: ${OUTPUT_TYPE === 'REDIS' ? `Redis (${REDIS_HOST}:${REDIS_PORT})` : OUTPUT_FILE}
@@ -743,11 +798,12 @@ Tarih formatı: YYYY-MM-DD
 
 async function main() {
     const args = process.argv.slice(2);
-    
+
     // Argümanları parse et
     let MODE = null;
     let DATE_FROM = null;
     let DATE_TO = null;
+    let EXPORT_FILE = null;
 
     for (let i = 0; i < args.length; i++) {
         if (args[i] === '--full') {
@@ -758,6 +814,13 @@ async function main() {
             MODE = 'update';
         } else if (args[i] === '--clear-redis') {
             MODE = 'clear-redis';
+        } else if (args[i] === '--export') {
+            MODE = 'export';
+            const nextArg = args[i + 1];
+            if (nextArg && !nextArg.startsWith('--')) {
+                EXPORT_FILE = nextArg;
+                i++;
+            }
         } else if (args[i] === '--date') {
             MODE = 'date';
             const nextArg = args[i + 1];
@@ -810,6 +873,42 @@ async function main() {
             process.exit(0);
         }
 
+        // --export komutu
+        if (MODE === 'export') {
+            if (OUTPUT_TYPE !== 'REDIS') {
+                console.error('❌ Hata: --export sadece REDIS modunda çalışır.');
+                console.error('   OUTPUT_TYPE=FILE ise veriler zaten JSON dosyasında.');
+                process.exit(1);
+            }
+
+            const exportFile = EXPORT_FILE || OUTPUT_FILE;
+            const totalCount = await storage.getTotalCount();
+
+            console.log(`\n📤 Redis'ten export ediliyor...`);
+            console.log(`   Kaynak: Redis (${REDIS_HOST}:${REDIS_PORT})`);
+            console.log(`   Hedef: ${exportFile}`);
+            console.log(`   Toplam kayıt: ${totalCount.toLocaleString()}\n`);
+
+            if (totalCount === 0) {
+                console.log('⚠️  Redis\'te kayıt bulunamadı.');
+                await storage.close();
+                process.exit(0);
+            }
+
+            const startTime = Date.now();
+            const result = await storage.exportToFile(exportFile, true);
+            const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+
+            console.log(`\n\n✅ Export tamamlandı!`);
+            console.log(`   Dosya: ${result.file}`);
+            console.log(`   Kayıt sayısı: ${result.count.toLocaleString()}`);
+            console.log(`   Süre: ${elapsed}s`);
+            console.log(`   Boyut: ${(fs.statSync(result.file).size / 1024 / 1024).toFixed(2)} MB`);
+
+            await storage.close();
+            process.exit(0);
+        }
+
         // Resume modu kontrolü
         let resumeData = null;
         if (MODE === 'resume') {
@@ -852,7 +951,7 @@ async function main() {
 
         // Tahmini süre
         const estimatedMinutes = Math.ceil((pageCount / PARALLEL_REQUESTS) * DELAY_MS / 1000 / 60);
-        const estimatedTimeText = estimatedMinutes >= 60 
+        const estimatedTimeText = estimatedMinutes >= 60
             ? `${Math.floor(estimatedMinutes / 60)} saat ${estimatedMinutes % 60} dakika`
             : `${estimatedMinutes} dakika`;
         console.log(`   - Tahmini süre: ~${estimatedTimeText}`);

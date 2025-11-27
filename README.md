@@ -48,7 +48,11 @@ node usom-scraper.js --date 2025-11-01
 # Tarih aralığı
 node usom-scraper.js --date 2025-11-01 2025-11-26
 
-# Redis verilerini sil (OUTPUT_TYPE=REDIS ise)
+# Redis'ten JSON dosyasına export et
+node usom-scraper.js --export
+node usom-scraper.js --export backup.json
+
+# Redis verilerini sil
 node usom-scraper.js --clear-redis
 ```
 
@@ -129,9 +133,17 @@ REDIS_KEY_PREFIX=usom:
 ```
 
 Redis veri yapısı:
+
 - `usom:ids` → SET (tüm ID'ler, duplicate kontrolü için)
 - `usom:record:{id}` → HASH (kayıt detayları)
 - `usom:meta` → STRING (metadata)
+
+**Redis'ten JSON'a export:**
+
+```bash
+node usom-scraper.js --export                # usom-archive.json'a
+node usom-scraper.js --export backup.json    # Belirtilen dosyaya
+```
 
 ### 🌐 Multi-Interface Kullanımı
 
@@ -144,7 +156,7 @@ PARALLEL_REQUESTS=2
 
 Progress bar'da duplicate istatistikleri de gösterilir:
 
-```
+```text
 [150/22248] %0.7 | Geçen: 3dk 45s | Kalan: 8sa 32dk | 149→*.0.5, 150→*.0.6 | Yeni: 2847, Atlandı: 153
 ```
 
