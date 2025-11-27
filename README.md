@@ -116,6 +116,7 @@ PARALLEL_REQUESTS=2
 ```
 
 Bu yapılandırma ile:
+
 - Her paralel istek farklı bir IP'den gider
 - Rate limit riski azalır, hız artar
 - Progress bar'da hangi IP'nin kullanıldığı görülür:
