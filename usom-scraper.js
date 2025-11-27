@@ -5,17 +5,47 @@
 
 const https = require('https');
 const fs = require('fs');
+const path = require('path');
 
-const BASE_URL = 'https://www.usom.gov.tr/api/address/index';
-const OUTPUT_FILE = 'usom-archive.json';
-const PARALLEL_REQUESTS = 1; // Tek tek istek (sunucu çok hassas)
-const DELAY_MS = 1500; // Her istek arasında 1.5 saniye bekleme
-const SAVE_INTERVAL = 10; // Kaç sayfada bir ara kayıt yapılacak
+// .env dosyasını oku (harici bağımlılık olmadan)
+function loadEnv() {
+    const envPath = path.join(__dirname, '.env');
+    if (!fs.existsSync(envPath)) return {};
+    
+    const env = {};
+    const content = fs.readFileSync(envPath, 'utf8');
+    
+    for (const line of content.split('\n')) {
+        const trimmed = line.trim();
+        // Boş satır veya yorum satırını atla
+        if (!trimmed || trimmed.startsWith('#')) continue;
+        
+        const eqIndex = trimmed.indexOf('=');
+        if (eqIndex === -1) continue;
+        
+        const key = trimmed.substring(0, eqIndex).trim();
+        const value = trimmed.substring(eqIndex + 1).trim();
+        env[key] = value;
+    }
+    
+    return env;
+}
 
-// Network interface'leri (IP adresleri) - Round-robin ile dönüşümlü kullanılır
+const env = loadEnv();
+
+// Yapılandırma sabitleri (.env varsa oradan, yoksa varsayılan)
+const BASE_URL = env.BASE_URL || 'https://www.usom.gov.tr/api/address/index';
+const OUTPUT_FILE = env.OUTPUT_FILE || 'usom-archive.json';
+const TEMP_FILE = env.TEMP_FILE || 'usom-archive-temp.json';
+const PARALLEL_REQUESTS = parseInt(env.PARALLEL_REQUESTS, 10) || 1;
+const DELAY_MS = parseInt(env.DELAY_MS, 10) || 1500;
+const SAVE_INTERVAL = parseInt(env.SAVE_INTERVAL, 10) || 10;
+
+// Network interface'leri (virgülle ayrılmış IP adresleri)
 // Boş bırakılırsa varsayılan interface kullanılır
-// Örnek: ['192.168.1.10', '192.168.1.11'] veya ['10.0.0.5', '10.0.0.6']
-const INTERFACES = [];
+const INTERFACES = env.INTERFACES 
+    ? env.INTERFACES.split(',').map(ip => ip.trim()).filter(ip => ip)
+    : [];
 
 // Round-robin sayacı
 let interfaceIndex = 0;
@@ -113,7 +143,6 @@ if (MODE === 'date' && !DATE_FROM) {
 }
 
 // Resume modu için geçici dosya kontrolü
-const TEMP_FILE = 'usom-archive-temp.json';
 let resumeData = null;
 if (MODE === 'resume') {
     if (!fs.existsSync(TEMP_FILE)) {
@@ -183,10 +212,10 @@ function buildUrl(page) {
 }
 
 // HTTPS isteği yapan fonksiyon
-function fetchPage(page) {
+// localAddress parametresi dışarıdan verilebilir (retry için aynı IP'yi kullanmak adına)
+function fetchPage(page, localAddress = null) {
     return new Promise((resolve, reject) => {
         const url = buildUrl(page);
-        const localAddress = getNextInterface();
 
         const options = {
             headers: {
@@ -237,21 +266,27 @@ function fetchPage(page) {
 }
 
 // Tekrar deneme mekanizmalı fetch - BAŞARILI OLANA KADAR DENE
+// Dönen obje: { data: JSON, page: number, ip: string|null }
 async function fetchPageWithRetry(page) {
     let attempt = 0;
+    // Bu sayfa için kullanılacak IP'yi baştan belirle (retry'larda aynı IP kullanılsın)
+    const localAddress = getNextInterface();
+    
     while (true) {
         attempt++;
         try {
-            return await fetchPage(page);
+            const data = await fetchPage(page, localAddress);
+            return { data, page, ip: localAddress };
         } catch (err) {
             // Rate limit (429) ise çok daha uzun bekle
             let waitTime;
+            const ipInfo = localAddress ? ` [${localAddress}]` : '';
             if (err.message.includes('429') || err.message.includes('Rate limit')) {
                 waitTime = Math.min(5000 * attempt, 30000); // Maksimum 30 saniye
-                process.stdout.write(`\n   ⏳ Sayfa ${page} - Rate limit (deneme ${attempt}) - ${waitTime / 1000}s bekleniyor...`);
+                process.stdout.write(`\n   ⏳ Sayfa ${page}${ipInfo} - Rate limit (deneme ${attempt}) - ${waitTime / 1000}s bekleniyor...`);
             } else {
                 waitTime = Math.min(3000 * attempt, 15000); // Maksimum 15 saniye
-                process.stdout.write(`\n   ⚠️ Sayfa ${page} - ${err.message} (deneme ${attempt}) - ${waitTime / 1000}s bekleniyor...`);
+                process.stdout.write(`\n   ⚠️ Sayfa ${page}${ipInfo} - ${err.message} (deneme ${attempt}) - ${waitTime / 1000}s bekleniyor...`);
             }
             await sleep(waitTime);
         }
@@ -276,16 +311,31 @@ function formatTime(seconds) {
     return `${h}sa ${m}dk`;
 }
 
+// IP adresini kısalt (son 2 oktet göster: 192.168.1.10 → *.1.10)
+function shortIp(ip) {
+    if (!ip) return null;
+    const parts = ip.split('.');
+    if (parts.length === 4) {
+        return `*.${parts[2]}.${parts[3]}`;
+    }
+    return ip; // IPv6 veya farklı format ise olduğu gibi döndür
+}
+
 // İlerleme çubuğu göster
-function showProgress(current, total, startTime, interfaceIp) {
+// pageIpMap: [{ page: number, ip: string }, ...] - son batch'teki sayfa-IP eşleşmeleri
+function showProgress(current, total, startTime, pageIpMap) {
     const percent = ((current / total) * 100).toFixed(1);
     const elapsedSec = Math.floor((Date.now() - startTime) / 1000);
     const etaSec = current > 0 ? Math.floor((elapsedSec / current) * (total - current)) : 0;
 
     let output = `\r[${current}/${total}] %${percent} | Geçen: ${formatTime(elapsedSec)} | Kalan: ${formatTime(etaSec)}`;
-    if (interfaceIp) {
-        output += ` | IP: ${interfaceIp}`;
+    
+    // Sayfa-IP eşleşmelerini göster (kısaltılmış IP ile)
+    if (pageIpMap && pageIpMap.length > 0 && pageIpMap[0].ip) {
+        const ipMappings = pageIpMap.map(m => `${m.page}→${shortIp(m.ip)}`).join(', ');
+        output += ` | ${ipMappings}`;
     }
+    
     output += '    ';
     process.stdout.write(output);
 }
@@ -306,7 +356,8 @@ async function main() {
         // İlk sayfayı al ve toplam sayfa sayısını öğren
         console.log('\n📡 İlk sayfa alınıyor...');
         // BUG-002 FIX: İlk sayfa için de retry mekanizması kullan
-        const firstPage = await fetchPageWithRetry(0);
+        const firstPageResult = await fetchPageWithRetry(0);
+        const firstPage = firstPageResult.data;
 
         const totalCount = firstPage.totalCount;
         const pageCount = firstPage.pageCount;
@@ -365,14 +416,15 @@ async function main() {
             const results = await fetchBatch(batchPages);
 
             // Sonuçları işle (artık hepsi başarılı)
+            // results: [{ data: JSON, page: number, ip: string|null }, ...]
             for (const result of results) {
-                allModels = allModels.concat(result.models);
+                allModels = allModels.concat(result.data.models);
             }
 
-            // İlerlemeyi göster
+            // İlerlemeyi göster - sayfa-IP eşleşmeleriyle
             const currentPage = Math.min(batchStart + PARALLEL_REQUESTS, pageCount);
-            const lastUsedInterface = getCurrentInterfaceIndex() >= 0 ? INTERFACES[getCurrentInterfaceIndex()] : null;
-            showProgress(currentPage, pageCount, startTime, lastUsedInterface);
+            const pageIpMap = results.map(r => ({ page: r.page, ip: r.ip }));
+            showProgress(currentPage, pageCount, startTime, pageIpMap);
 
             // Her SAVE_INTERVAL değeri kadar sayfada bir kaydet (veri kaybını önlemek için)
             if (batchStart % SAVE_INTERVAL < PARALLEL_REQUESTS) {

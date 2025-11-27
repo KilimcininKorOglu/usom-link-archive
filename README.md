@@ -12,6 +12,7 @@ USOM (Ulusal Siber Olaylara Müdahale Merkezi) API'sinden zararlı URL, domain v
 - **Akıllı Güncelleme**: Sadece yeni kayıtları çek, mevcut arşivi koru
 - **Tarih Filtresi**: Belirli tarih aralığındaki kayıtları çek
 - **Rate Limit Yönetimi**: HTTP 429 hatalarını otomatik algıla ve bekle
+- **Multi-Interface**: Birden fazla IP ile paralel istek (round-robin)
 - **Kesintiye Dayanıklı**: Ara kayıt ile veri kaybını önle
 - **Sıfır Bağımlılık**: Sadece Node.js yeterli
 
@@ -85,16 +86,45 @@ Bot, `usom-archive.json` dosyası oluşturur:
 
 ## ⚙️ Yapılandırma
 
-`usom-scraper.js` dosyasının başındaki sabitleri düzenleyebilirsiniz:
+`.env.example` dosyasını `.env` olarak kopyalayın ve düzenleyin:
 
-```javascript
-const PARALLEL_REQUESTS = 1;  // Paralel istek sayısı (1 önerilir)
-const DELAY_MS = 1500;        // İstekler arası bekleme (ms)
-const SAVE_INTERVAL = 10;     // Ara kayıt aralığı (sayfa)
-const OUTPUT_FILE = 'usom-archive.json';
+```bash
+cp .env.example .env
 ```
 
-> ⚠️ **Uyarı**: `PARALLEL_REQUESTS` değerini artırmak HTTP 429 hatalarına neden olabilir.
+Yapılandırma değişkenleri:
+
+```env
+BASE_URL=https://www.usom.gov.tr/api/address/index
+OUTPUT_FILE=usom-archive.json
+TEMP_FILE=usom-archive-temp.json
+PARALLEL_REQUESTS=1
+DELAY_MS=1500
+SAVE_INTERVAL=10
+INTERFACES=
+```
+
+> **Not**: `.env` dosyası yoksa varsayılan değerler kullanılır.
+
+### 🌐 Multi-Interface Kullanımı
+
+Birden fazla network interface'iniz varsa, rate limit'ten kaçınmak için round-robin kullanabilirsiniz:
+
+```env
+INTERFACES=10.0.0.5,10.0.0.6
+PARALLEL_REQUESTS=2
+```
+
+Bu yapılandırma ile:
+- Her paralel istek farklı bir IP'den gider
+- Rate limit riski azalır, hız artar
+- Progress bar'da hangi IP'nin kullanıldığı görülür:
+
+```
+[150/22248] %0.7 | Geçen: 3dk 45s | Kalan: 8sa 32dk | 149→*.0.5, 150→*.0.6
+```
+
+> 💡 **İpucu**: `PARALLEL_REQUESTS` değerini interface sayısına eşitleyin.
 
 ## 📈 Performans
 
@@ -139,6 +169,8 @@ USOM API'si rate limiting uygulamaktadır. Bot otomatik olarak:
 ```bash
 usom-link-archive/
 ├── usom-scraper.js        # Ana bot
+├── .env.example           # Yapılandırma şablonu
+├── .env                   # Yapılandırma dosyası (oluşturulur, .gitignore'da)
 ├── usom-archive.json      # Çıktı dosyası (oluşturulur)
 ├── usom-archive-temp.json # Geçici dosya (--resume için, tamamlanınca silinir)
 └── README.md
