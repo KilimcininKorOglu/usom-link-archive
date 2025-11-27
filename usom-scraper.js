@@ -241,8 +241,14 @@ class SimpleRedisClient {
         this.useTls = options.tls || false;
         this.socket = null;
         this.connected = false;
+        this.connecting = false;
         this.responseBuffer = '';
         this.responseQueue = [];
+
+        // Reconnect yapılandırması
+        this.maxReconnectAttempts = options.maxReconnectAttempts || 10;
+        this.reconnectDelay = options.reconnectDelay || 1000; // ms
+        this.reconnectAttempts = 0;
     }
 
     // RESP protokolü ile komut oluştur
@@ -332,32 +338,93 @@ class SimpleRedisClient {
     }
 
     async connect() {
+        if (this.connecting) {
+            // Zaten bağlanma işlemi devam ediyor
+            await this._waitForConnection();
+            return;
+        }
+
+        this.connecting = true;
+
         return new Promise((resolve, reject) => {
             const connectOptions = { host: this.host, port: this.port };
 
+            const onConnect = () => {
+                this.connected = true;
+                this.connecting = false;
+                this.reconnectAttempts = 0; // Başarılı bağlantıda sıfırla
+                this._authenticate().then(resolve).catch(reject);
+            };
+
             if (this.useTls) {
-                this.socket = tls.connect(connectOptions, () => {
-                    this.connected = true;
-                    this._authenticate().then(resolve).catch(reject);
-                });
+                this.socket = tls.connect(connectOptions, onConnect);
             } else {
-                this.socket = net.connect(connectOptions, () => {
-                    this.connected = true;
-                    this._authenticate().then(resolve).catch(reject);
-                });
+                this.socket = net.connect(connectOptions, onConnect);
             }
 
             this.socket.on('error', (err) => {
                 this.connected = false;
+                this.connecting = false;
                 reject(err);
             });
 
             this.socket.on('close', () => {
                 this.connected = false;
+                this.connecting = false;
             });
 
             this.socket.setEncoding('utf8');
         });
+    }
+
+    // Bağlantının tamamlanmasını bekle
+    async _waitForConnection(timeout = 5000) {
+        const start = Date.now();
+        while (this.connecting && Date.now() - start < timeout) {
+            await new Promise(r => setTimeout(r, 100));
+        }
+        if (!this.connected) {
+            throw new Error('Bağlantı zaman aşımı');
+        }
+    }
+
+    // Otomatik yeniden bağlanma
+    async reconnect() {
+        if (this.connected || this.connecting) return true;
+
+        this.reconnectAttempts++;
+
+        if (this.reconnectAttempts > this.maxReconnectAttempts) {
+            throw new Error(`Redis: Maksimum yeniden bağlanma denemesi aşıldı (${this.maxReconnectAttempts})`);
+        }
+
+        const delay = this.reconnectDelay * this.reconnectAttempts;
+        console.log(`\n   🔄 Redis yeniden bağlanıyor... (deneme ${this.reconnectAttempts}/${this.maxReconnectAttempts}, ${delay}ms bekleniyor)`);
+
+        await new Promise(r => setTimeout(r, delay));
+
+        try {
+            // Eski socket'i temizle
+            if (this.socket) {
+                this.socket.removeAllListeners();
+                this.socket.destroy();
+                this.socket = null;
+            }
+
+            await this.connect();
+            console.log(`   ✅ Redis yeniden bağlandı.`);
+            return true;
+        } catch (err) {
+            console.error(`   ❌ Yeniden bağlanma başarısız: ${err.message}`);
+            return this.reconnect(); // Recursive retry
+        }
+    }
+
+    // Bağlantıyı kontrol et ve gerekirse yeniden bağlan
+    async ensureConnection() {
+        if (!this.connected && !this.connecting) {
+            await this.reconnect();
+        }
     }
 
     async _authenticate() {
@@ -369,7 +436,16 @@ class SimpleRedisClient {
         }
     }
 
-    async _sendCommand(args) {
+    async _sendCommand(args, retryOnDisconnect = true) {
+        // Bağlantıyı kontrol et
+        if (!this.connected && !this.connecting) {
+            if (retryOnDisconnect) {
+                await this.ensureConnection();
+            } else {
+                throw new Error('Redis bağlantısı yok');
+            }
+        }
+
         return new Promise((resolve, reject) => {
             if (!this.connected || !this.socket) {
                 return reject(new Error('Redis bağlantısı yok'));
@@ -383,6 +459,7 @@ class SimpleRedisClient {
                 try {
                     const parsed = this._parseSingleResponse(responseData);
                     this.socket.removeListener('data', onData);
+                    this.socket.removeListener('error', onError);
                     resolve(parsed.value);
                 } catch (e) {
                     // Henüz tam yanıt gelmedi, beklemeye devam et
@@ -390,12 +467,34 @@ class SimpleRedisClient {
                         // Parse hatası değilse bekle
                     } else {
                         this.socket.removeListener('data', onData);
+                        this.socket.removeListener('error', onError);
                         reject(e);
                     }
                 }
             };
 
+            const onError = async (err) => {
+                this.socket.removeListener('data', onData);
+                this.socket.removeListener('error', onError);
+                this.connected = false;
+
+                // Bağlantı hatası - yeniden bağlanmayı dene
+                if (retryOnDisconnect) {
+                    try {
+                        await this.reconnect();
+                        // Yeniden bağlandıktan sonra komutu tekrar dene
+                        const result = await this._sendCommand(args, false);
+                        resolve(result);
+                    } catch (reconnectErr) {
+                        reject(reconnectErr);
+                    }
+                } else {
+                    reject(err);
+                }
+            };
+
             this.socket.on('data', onData);
+            this.socket.once('error', onError);
             this.socket.write(cmd);
         });
     }
@@ -464,8 +563,17 @@ class SimpleRedisClient {
     }
 
     // Gerçek Pipeline desteği - tüm komutları tek seferde gönder, yanıtları toplu al
-    async pipeline(commands) {
+    async pipeline(commands, retryOnDisconnect = true) {
         if (commands.length === 0) return [];
+
+        // Bağlantıyı kontrol et
+        if (!this.connected && !this.connecting) {
+            if (retryOnDisconnect) {
+                await this.ensureConnection();
+            } else {
+                throw new Error('Redis bağlantısı yok');
+            }
+        }
 
         return new Promise((resolve, reject) => {
             if (!this.connected || !this.socket) {
