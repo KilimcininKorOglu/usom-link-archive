@@ -12,6 +12,29 @@ const PARALLEL_REQUESTS = 1; // Tek tek istek (sunucu çok hassas)
 const DELAY_MS = 1500; // Her istek arasında 1.5 saniye bekleme
 const SAVE_INTERVAL = 10; // Kaç sayfada bir ara kayıt yapılacak
 
+// Network interface'leri (IP adresleri) - Round-robin ile dönüşümlü kullanılır
+// Boş bırakılırsa varsayılan interface kullanılır
+// Örnek: ['192.168.1.10', '192.168.1.11'] veya ['10.0.0.5', '10.0.0.6']
+const INTERFACES = [];
+
+// Round-robin sayacı
+let interfaceIndex = 0;
+
+// Sıradaki interface'i döndür (round-robin)
+function getNextInterface() {
+    if (INTERFACES.length === 0) return null;
+    const ip = INTERFACES[interfaceIndex];
+    interfaceIndex = (interfaceIndex + 1) % INTERFACES.length;
+    return ip;
+}
+
+// Mevcut interface index'ini döndür (progress bar için)
+function getCurrentInterfaceIndex() {
+    if (INTERFACES.length === 0) return -1;
+    // Son kullanılan index (getNextInterface zaten artırmış olacak)
+    return interfaceIndex === 0 ? INTERFACES.length - 1 : interfaceIndex - 1;
+}
+
 // Komut satırı argümanlarını parse et
 const args = process.argv.slice(2);
 
@@ -163,6 +186,7 @@ function buildUrl(page) {
 function fetchPage(page) {
     return new Promise((resolve, reject) => {
         const url = buildUrl(page);
+        const localAddress = getNextInterface();
 
         const options = {
             headers: {
@@ -173,6 +197,11 @@ function fetchPage(page) {
                 'Cache-Control': 'no-cache',
             }
         };
+
+        // Birden fazla interface varsa localAddress ekle
+        if (localAddress) {
+            options.localAddress = localAddress;
+        }
 
         https.get(url, options, (res) => {
             let data = '';
@@ -248,12 +277,17 @@ function formatTime(seconds) {
 }
 
 // İlerleme çubuğu göster
-function showProgress(current, total, startTime) {
+function showProgress(current, total, startTime, interfaceIp) {
     const percent = ((current / total) * 100).toFixed(1);
     const elapsedSec = Math.floor((Date.now() - startTime) / 1000);
     const etaSec = current > 0 ? Math.floor((elapsedSec / current) * (total - current)) : 0;
 
-    process.stdout.write(`\r[${current}/${total}] %${percent} | Geçen: ${formatTime(elapsedSec)} | Kalan: ${formatTime(etaSec)}    `);
+    let output = `\r[${current}/${total}] %${percent} | Geçen: ${formatTime(elapsedSec)} | Kalan: ${formatTime(etaSec)}`;
+    if (interfaceIp) {
+        output += ` | IP: ${interfaceIp}`;
+    }
+    output += '    ';
+    process.stdout.write(output);
 }
 
 // Toplu istek işlemi (başarılı olana kadar dener, hata atmaz)
@@ -286,6 +320,10 @@ async function main() {
             console.log(`   - Tarih filtresi: ${fromText} → ${toText}`);
         }
         console.log(`   - Paralel istek: ${PARALLEL_REQUESTS}`);
+        if (INTERFACES.length > 0) {
+            console.log(`   - Network interface: ${INTERFACES.length} adet (round-robin)`);
+            INTERFACES.forEach((ip, i) => console.log(`      ${i + 1}. ${ip}`));
+        }
 
         // Tahmini süreyi hesapla ve formatla
         const estimatedMinutes = Math.ceil((pageCount / PARALLEL_REQUESTS) * DELAY_MS / 1000 / 60);
@@ -333,7 +371,8 @@ async function main() {
 
             // İlerlemeyi göster
             const currentPage = Math.min(batchStart + PARALLEL_REQUESTS, pageCount);
-            showProgress(currentPage, pageCount, startTime);
+            const lastUsedInterface = getCurrentInterfaceIndex() >= 0 ? INTERFACES[getCurrentInterfaceIndex()] : null;
+            showProgress(currentPage, pageCount, startTime, lastUsedInterface);
 
             // Her SAVE_INTERVAL değeri kadar sayfada bir kaydet (veri kaybını önlemek için)
             if (batchStart % SAVE_INTERVAL < PARALLEL_REQUESTS) {
