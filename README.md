@@ -10,6 +10,8 @@ USOM (Ulusal Siber Olaylara Müdahale Merkezi) API'sinden zararlı URL, domain v
 - **Tam Arşiv**: 444,000+ zararlı URL kaydını tek seferde indir
 - **Devam Ettirme**: Yarıda kalan indirmeyi kaldığı yerden devam ettir
 - **Akıllı Güncelleme**: Sadece yeni kayıtları çek, mevcut arşivi koru
+- **Duplicate Kontrolü**: Mükerrer kayıtları otomatik atla
+- **FILE veya REDIS**: JSON dosyasına veya Redis'e kaydet
 - **Tarih Filtresi**: Belirli tarih aralığındaki kayıtları çek
 - **Rate Limit Yönetimi**: HTTP 429 hatalarını otomatik algıla ve bekle
 - **Multi-Interface**: Birden fazla IP ile paralel istek (round-robin)
@@ -31,7 +33,7 @@ cd usom-link-archive
 # Yardım göster
 node usom-scraper.js
 
-# Tüm arşivi çek (~444,000+ kayıt, ~9 saat)
+# Tüm arşivi çek (~444,000+ kayıt)
 node usom-scraper.js --full
 
 # Yarıda kalan indirmeye devam et
@@ -45,6 +47,9 @@ node usom-scraper.js --date 2025-11-01
 
 # Tarih aralığı
 node usom-scraper.js --date 2025-11-01 2025-11-26
+
+# Redis verilerini sil (OUTPUT_TYPE=REDIS ise)
+node usom-scraper.js --clear-redis
 ```
 
 ## 📊 Çıktı Formatı
@@ -92,37 +97,55 @@ Bot, `usom-archive.json` dosyası oluşturur:
 cp .env.example .env
 ```
 
-Yapılandırma değişkenleri:
+### Temel Ayarlar
 
 ```env
-BASE_URL=https://www.usom.gov.tr/api/address/index
+# Çıktı Tipi: FILE veya REDIS
+OUTPUT_TYPE=FILE
+
+# Dosya ayarları (OUTPUT_TYPE=FILE)
 OUTPUT_FILE=usom-archive.json
 TEMP_FILE=usom-archive-temp.json
+
+# İstek ayarları
 PARALLEL_REQUESTS=1
 DELAY_MS=1500
 SAVE_INTERVAL=10
 INTERFACES=
 ```
 
-> **Not**: `.env` dosyası yoksa varsayılan değerler kullanılır.
+### 🗄️ Redis Kullanımı
+
+Redis'e kaydetmek için:
+
+```env
+OUTPUT_TYPE=REDIS
+REDIS_HOST=localhost
+REDIS_PORT=6379
+REDIS_PASSWORD=your_password
+REDIS_DB=0
+REDIS_TLS=false
+REDIS_KEY_PREFIX=usom:
+```
+
+Redis veri yapısı:
+- `usom:ids` → SET (tüm ID'ler, duplicate kontrolü için)
+- `usom:record:{id}` → HASH (kayıt detayları)
+- `usom:meta` → STRING (metadata)
 
 ### 🌐 Multi-Interface Kullanımı
 
-Birden fazla network interface'iniz varsa, rate limit'ten kaçınmak için round-robin kullanabilirsiniz:
+Rate limit'ten kaçınmak için birden fazla IP kullanabilirsiniz:
 
 ```env
 INTERFACES=10.0.0.5,10.0.0.6
 PARALLEL_REQUESTS=2
 ```
 
-Bu yapılandırma ile:
-
-- Her paralel istek farklı bir IP'den gider
-- Rate limit riski azalır, hız artar
-- Progress bar'da hangi IP'nin kullanıldığı görülür:
+Progress bar'da duplicate istatistikleri de gösterilir:
 
 ```
-[150/22248] %0.7 | Geçen: 3dk 45s | Kalan: 8sa 32dk | 149→*.0.5, 150→*.0.6
+[150/22248] %0.7 | Geçen: 3dk 45s | Kalan: 8sa 32dk | 149→*.0.5, 150→*.0.6 | Yeni: 2847, Atlandı: 153
 ```
 
 > 💡 **İpucu**: `PARALLEL_REQUESTS` değerini interface sayısına eşitleyin.
