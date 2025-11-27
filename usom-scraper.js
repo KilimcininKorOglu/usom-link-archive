@@ -1109,6 +1109,7 @@ async function main() {
 
     // Storage oluştur
     const storage = createStorage();
+    currentStorage = storage; // Graceful shutdown için global referans
 
     try {
         console.log(`\n📦 Çıktı tipi: ${OUTPUT_TYPE}`);
@@ -1222,8 +1223,20 @@ async function main() {
 
         const startTime = Date.now();
 
+        // Graceful shutdown için global değişkenleri güncelle
+        currentPageCount = pageCount;
+
         // Tüm sayfaları tara
         for (let batchStart = startBatch; batchStart < pageCount; batchStart += PARALLEL_REQUESTS) {
+            // Graceful shutdown kontrolü
+            if (isShuttingDown) {
+                console.log('\n   ⏹️  Döngü durduruldu.');
+                break;
+            }
+
+            // Global batch değerini güncelle (graceful shutdown için)
+            currentBatch = batchStart;
+
             const batchPages = [];
             for (let i = 0; i < PARALLEL_REQUESTS && (batchStart + i) < pageCount; i++) {
                 batchPages.push(batchStart + i);
@@ -1305,6 +1318,107 @@ async function main() {
         await storage.close();
     }
 }
+
+// ============================================================================
+// GRACEFUL SHUTDOWN
+// ============================================================================
+
+// Global state for graceful shutdown
+let isShuttingDown = false;
+let currentStorage = null;
+let shutdownReason = null;
+let currentBatch = 0; // Ana döngüdeki mevcut batch
+let currentPageCount = 0; // Toplam sayfa sayısı
+
+async function gracefulShutdown(signal) {
+    if (isShuttingDown) return;
+    isShuttingDown = true;
+    shutdownReason = signal;
+
+    console.log(`\n\n⚠️  ${signal} alındı, güvenli kapatma başlatılıyor...`);
+
+    try {
+        if (currentStorage) {
+            // Mevcut ilerlemeyi kaydet
+            console.log('   💾 Son durum kaydediliyor...');
+            const stats = await currentStorage.getStats();
+            const totalCount = await currentStorage.getTotalCount();
+
+            // Temp dosyasına kaydet (resume için)
+            await currentStorage.saveTemp({
+                lastBatch: currentBatch,
+                pageCount: currentPageCount,
+                interrupted: true,
+                signal: signal,
+                timestamp: new Date().toISOString()
+            });
+
+            // Storage'ı kapat
+            await currentStorage.close();
+            console.log('   ✅ Storage kapatıldı.');
+
+            // Webhook bildirimi
+            await webhook.send(
+                'USOM Tarama Durduruldu',
+                `İşlem ${signal} sinyali ile durduruldu.`,
+                {
+                    added: stats.added,
+                    skipped: stats.skipped,
+                    total: totalCount,
+                    duration: 'Yarıda kesildi'
+                }
+            );
+        }
+    } catch (err) {
+        console.error(`   ❌ Kapatma hatası: ${err.message}`);
+    }
+
+    console.log('   👋 Program sonlandırılıyor.\n');
+    process.exit(0);
+}
+
+// Signal handlers
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+
+// Windows için CTRL+C handler
+if (process.platform === 'win32') {
+    const readline = require('readline');
+    const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout
+    });
+    rl.on('SIGINT', () => gracefulShutdown('SIGINT'));
+}
+
+// Uncaught exception handler
+process.on('uncaughtException', async (err) => {
+    console.error('\n❌ Yakalanmamış hata:', err.message);
+    await webhook.notifyError(err);
+    if (currentStorage) {
+        try {
+            await currentStorage.close();
+        } catch (e) {
+            // ignore
+        }
+    }
+    process.exit(1);
+});
+
+// Unhandled rejection handler
+process.on('unhandledRejection', async (reason, promise) => {
+    console.error('\n❌ İşlenmeyen promise reddi:', reason);
+    const err = reason instanceof Error ? reason : new Error(String(reason));
+    await webhook.notifyError(err);
+    if (currentStorage) {
+        try {
+            await currentStorage.close();
+        } catch (e) {
+            // ignore
+        }
+    }
+    process.exit(1);
+});
 
 // Programı başlat
 main();
