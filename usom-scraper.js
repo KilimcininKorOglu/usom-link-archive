@@ -64,6 +64,7 @@ const INTERFACES = env.INTERFACES
     : [];
 
 // Webhook yapılandırması
+const WEBHOOK_ENABLED = env.WEBHOOK_ENABLED === 'true';
 const WEBHOOK_URL = env.WEBHOOK_URL || '';
 const WEBHOOK_TYPE = (env.WEBHOOK_TYPE || 'generic').toLowerCase(); // generic, telegram, discord
 const TELEGRAM_CHAT_ID = env.TELEGRAM_CHAT_ID || '';
@@ -73,11 +74,11 @@ const TELEGRAM_CHAT_ID = env.TELEGRAM_CHAT_ID || '';
 // ============================================================================
 
 class WebhookNotifier {
-    constructor(url, type, options = {}) {
+    constructor(enabled, url, type, options = {}) {
         this.url = url;
         this.type = type;
         this.chatId = options.chatId || '';
-        this.enabled = !!url;
+        this.enabled = enabled && !!url; // WEBHOOK_ENABLED=true VE URL dolu olmalı
     }
 
     // HTTP POST isteği gönder
@@ -224,7 +225,7 @@ class WebhookNotifier {
 }
 
 // Global webhook instance
-const webhook = new WebhookNotifier(WEBHOOK_URL, WEBHOOK_TYPE, {
+const webhook = new WebhookNotifier(WEBHOOK_ENABLED, WEBHOOK_URL, WEBHOOK_TYPE, {
     chatId: TELEGRAM_CHAT_ID
 });
 
