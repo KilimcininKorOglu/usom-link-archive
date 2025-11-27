@@ -12,10 +12,13 @@ USOM (Ulusal Siber Olaylara Müdahale Merkezi) API'sinden zararlı URL, domain v
 - **Akıllı Güncelleme**: Sadece yeni kayıtları çek, mevcut arşivi koru
 - **Duplicate Kontrolü**: Mükerrer kayıtları otomatik atla
 - **FILE veya REDIS**: JSON dosyasına veya Redis'e kaydet
+- **Redis Pipeline**: Gerçek pipeline ile 10-50x daha hızlı yazma
 - **Tarih Filtresi**: Belirli tarih aralığındaki kayıtları çek
 - **Rate Limit Yönetimi**: HTTP 429 hatalarını otomatik algıla ve bekle
 - **Multi-Interface**: Birden fazla IP ile paralel istek (round-robin)
-- **Kesintiye Dayanıklı**: Ara kayıt ile veri kaybını önle
+- **Webhook Bildirimi**: Telegram, Discord veya generic webhook desteği
+- **Graceful Shutdown**: CTRL+C ile güvenli durdurma, kaldığı yerden devam
+- **Auto-Reconnect**: Redis bağlantısı koptuğunda otomatik yeniden bağlanma
 - **Sıfır Bağımlılık**: Sadece Node.js yeterli
 
 ## 📦 Kurulum
@@ -161,6 +164,48 @@ Progress bar'da duplicate istatistikleri de gösterilir:
 ```
 
 > 💡 **İpucu**: `PARALLEL_REQUESTS` değerini interface sayısına eşitleyin.
+
+### 🔔 Webhook Bildirimleri
+
+Tarama tamamlandığında veya hata oluştuğunda bildirim alın:
+
+```env
+# Webhook'u etkinleştir
+WEBHOOK_ENABLED=true
+WEBHOOK_TYPE=telegram
+WEBHOOK_URL=https://api.telegram.org/bot<TOKEN>/sendMessage
+TELEGRAM_CHAT_ID=123456789
+```
+
+**Desteklenen platformlar:**
+
+| Platform | WEBHOOK_TYPE | URL Formatı |
+|----------|--------------|-------------|
+| Telegram | `telegram` | `https://api.telegram.org/bot<TOKEN>/sendMessage` |
+| Discord | `discord` | `https://discord.com/api/webhooks/<ID>/<TOKEN>` |
+| Generic | `generic` | Herhangi bir webhook URL'i |
+
+**Bildirim içeriği:**
+- ✅ Tamamlanma: Yeni kayıt sayısı, atlanan, toplam, süre
+- ❌ Hata: Hata mesajı
+- ⚠️ Durduruldu: CTRL+C ile durdurulduğunda
+
+### 🛑 Graceful Shutdown
+
+`CTRL+C` veya `kill` komutu ile güvenli durdurma:
+
+- Mevcut batch tamamlanır
+- Son durum kaydedilir
+- `--resume` ile kaldığı yerden devam edilebilir
+- Webhook bildirimi gönderilir (etkinse)
+
+```bash
+# Durdur
+CTRL+C
+
+# Devam et
+node usom-scraper.js --resume
+```
 
 ## 📈 Performans
 
