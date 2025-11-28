@@ -884,13 +884,76 @@ class RedisStorage {
         return this.stats;
     }
 
-    async clearAll() {
-        // Tüm USOM key'lerini sil
-        const keys = await this.client.keys(`${this.prefix}*`);
-        if (keys && keys.length > 0) {
-            await this.client.del(...keys);
+    async getRedisStats() {
+        const stats = {
+            totalRecords: 0,
+            totalKeys: 0,
+            memoryUsage: 'N/A',
+            oldestRecord: null,
+            newestRecord: null,
+            typeBreakdown: {}
+        };
+
+        // Toplam kayıt sayısı
+        stats.totalRecords = await this.client.scard(`${this.prefix}ids`);
+
+        // Toplam key sayısı (SCAN ile)
+        let cursor = '0';
+        let keyCount = 0;
+        do {
+            const scanResult = await this.client._sendCommand(['SCAN', cursor, 'MATCH', `${this.prefix}*`, 'COUNT', '1000']);
+            cursor = scanResult[0];
+            keyCount += scanResult[1].length;
+        } while (cursor !== '0');
+        stats.totalKeys = keyCount;
+
+        // Bellek kullanımı
+        try {
+            const info = await this.client._sendCommand(['INFO', 'memory']);
+            const match = info.match(/used_memory_human:([^\r\n]+)/);
+            if (match) stats.memoryUsage = match[1];
+        } catch (e) { /* ignore */ }
+
+        // Örnek kayıtlardan tarih ve tür bilgisi al
+        if (stats.totalRecords > 0) {
+            const sampleIds = await this.client._sendCommand(['SRANDMEMBER', `${this.prefix}ids`, '100']);
+
+            let oldest = null;
+            let newest = null;
+            const types = {};
+
+            for (const id of sampleIds) {
+                const record = await this.client.hgetall(`${this.prefix}record:${id}`);
+                if (record) {
+                    // Tarih kontrolü
+                    if (record.date) {
+                        const date = new Date(record.date);
+                        if (!oldest || date < oldest) oldest = date;
+                        if (!newest || date > newest) newest = date;
+                    }
+                    // Tür sayımı
+                    if (record.type) {
+                        types[record.type] = (types[record.type] || 0) + 1;
+                    }
+                }
+            }
+
+            if (oldest) stats.oldestRecord = oldest.toISOString().split('T')[0];
+            if (newest) stats.newestRecord = newest.toISOString().split('T')[0];
+            stats.typeBreakdown = types;
         }
-        return keys ? keys.length : 0;
+
+        return stats;
+    }
+
+    async clearAll() {
+        // Mevcut DB'deki key sayısını al
+        const beforeCount = await this.client.dbsize();
+
+        // FLUSHDB ile tüm DB'yi temizle
+        await this.client._sendCommand(['FLUSHDB']);
+
+        return beforeCount;
     }
 
     // Redis'ten tüm kayıtları çek ve JSON dosyasına export et
@@ -1096,7 +1159,7 @@ async function fetchBatch(pages, dateFrom, dateTo) {
 // PROGRESS BAR
 // ============================================================================
 
-function showProgress(current, total, startTime, pageIpMap, stats) {
+function showProgress(current, total, startTime, pageIpMap, stats, redisCount = null) {
     const percent = ((current / total) * 100).toFixed(1);
     const elapsedSec = Math.floor((Date.now() - startTime) / 1000);
     const etaSec = current > 0 ? Math.floor((elapsedSec / current) * (total - current)) : 0;
@@ -1107,6 +1170,11 @@ function showProgress(current, total, startTime, pageIpMap, stats) {
     const bar = '█'.repeat(filled) + '░'.repeat(barWidth - filled);
 
     let output = `\r[${bar}] %${percent} | ${current.toLocaleString()}/${total.toLocaleString()} | ${formatTime(etaSec)} kaldı`;
+
+    // Redis kayıt sayısı
+    if (redisCount !== null) {
+        output += ` | Redis: ${redisCount.toLocaleString()}`;
+    }
 
     // Duplicate istatistikleri
     if (stats) {
@@ -1119,6 +1187,109 @@ function showProgress(current, total, startTime, pageIpMap, stats) {
     // Satırı temizle ve yaz
     output += '          ';
     process.stdout.write(output);
+}
+
+// ============================================================================
+// IP TEST FONKSİYONU
+// ============================================================================
+
+async function testInterfaces() {
+    console.log('='.repeat(60));
+    console.log('Network Interface IP Testi');
+    console.log('='.repeat(60));
+
+    const checkExternalIP = (localAddress = null) => {
+        return new Promise((resolve, reject) => {
+            const options = {
+                hostname: 'api.ipify.org',
+                port: 443,
+                path: '/?format=json',
+                method: 'GET',
+                timeout: 10000,
+                headers: { 'User-Agent': 'curl/7.68.0' }
+            };
+
+            if (localAddress) {
+                options.localAddress = localAddress;
+            }
+
+            const req = https.request(options, (res) => {
+                let data = '';
+                res.on('data', chunk => data += chunk);
+                res.on('end', () => {
+                    try {
+                        const ip = JSON.parse(data).ip;
+                        resolve({ localAddress, externalIP: ip });
+                    } catch (e) {
+                        reject(new Error(`Parse hatası: ${e.message}`));
+                    }
+                });
+            });
+
+            req.on('error', (err) => reject(new Error(err.code || err.message)));
+            req.on('timeout', () => { req.destroy(); reject(new Error('Timeout')); });
+            req.end();
+        });
+    };
+
+    console.log(`\n📡 IP Kontrol Servisi: https://api.ipify.org\n`);
+
+    // Varsayılan interface
+    console.log('🔍 Varsayılan Interface:');
+    try {
+        const result = await checkExternalIP(null);
+        console.log(`   ✅ Çıkış IP: ${result.externalIP}\n`);
+    } catch (err) {
+        console.log(`   ❌ Hata: ${err.message}\n`);
+    }
+
+    // Tanımlı interface'ler
+    if (INTERFACES.length === 0) {
+        console.log('⚠️  .env dosyasında INTERFACES tanımlı değil!');
+        console.log('   💡 Örnek: INTERFACES=10.11.13.61,10.11.13.62,10.11.13.63\n');
+        return;
+    }
+
+    console.log(`📋 Tanımlı Interface'ler (${INTERFACES.length} adet):\n`);
+
+    const results = [];
+
+    for (let i = 0; i < INTERFACES.length; i++) {
+        const localIP = INTERFACES[i];
+        process.stdout.write(`   [${i + 1}/${INTERFACES.length}] ${localIP} → `);
+
+        try {
+            const result = await checkExternalIP(localIP);
+            console.log(`✅ ${result.externalIP}`);
+            results.push({ local: localIP, external: result.externalIP, ok: true });
+        } catch (err) {
+            console.log(`❌ ${err.message}`);
+            results.push({ local: localIP, external: null, ok: false });
+        }
+
+        await sleep(500);
+    }
+
+    // Özet
+    console.log('\n' + '='.repeat(60));
+    console.log('📊 ÖZET');
+    console.log('='.repeat(60));
+
+    const uniqueIPs = new Set(results.filter(r => r.ok).map(r => r.external));
+    const successCount = results.filter(r => r.ok).length;
+
+    console.log(`   Başarılı: ${successCount}/${INTERFACES.length}`);
+    console.log(`   Benzersiz çıkış IP: ${uniqueIPs.size}`);
+
+    if (uniqueIPs.size === 1 && successCount > 1) {
+        console.log('\n   ⚠️  UYARI: Tüm interface\'ler AYNI çıkış IP\'sini kullanıyor!');
+    } else if (uniqueIPs.size > 1) {
+        console.log('\n   ✅ Farklı çıkış IP\'leri doğrulandı!');
+    }
+
+    console.log('\n   Çıkış IP\'leri:');
+    uniqueIPs.forEach(ip => console.log(`   • ${ip}`));
+    console.log('');
 }
 
 // ============================================================================
@@ -1142,6 +1313,8 @@ Seçenekler:
   --date <başlangıç> <bitiş> Tarih aralığı
   --export [dosya]           Redis'ten JSON dosyasına export et
   --clear-redis              Redis'teki tüm USOM verilerini sil
+  --test-ip                  Network interface'lerin çıkış IP'lerini test et
+  --stats                    Redis'teki kayıtların istatistiklerini göster
 
 Tarih formatı: YYYY-MM-DD
 
@@ -1153,6 +1326,8 @@ Tarih formatı: YYYY-MM-DD
   node usom-scraper.js --export                    # ${OUTPUT_FILE} dosyasına
   node usom-scraper.js --export my-archive.json    # Belirtilen dosyaya
   node usom-scraper.js --clear-redis
+  node usom-scraper.js --test-ip
+  node usom-scraper.js --stats
 
 Çıktı: ${OUTPUT_TYPE === 'REDIS' ? `Redis (${REDIS_HOST}:${REDIS_PORT})` : OUTPUT_FILE}
 `);
@@ -1180,6 +1355,10 @@ async function main() {
             MODE = 'update';
         } else if (args[i] === '--clear-redis') {
             MODE = 'clear-redis';
+        } else if (args[i] === '--test-ip') {
+            MODE = 'test-ip';
+        } else if (args[i] === '--stats') {
+            MODE = 'stats';
         } else if (args[i] === '--export') {
             MODE = 'export';
             const nextArg = args[i + 1];
@@ -1210,6 +1389,12 @@ async function main() {
         process.exit(0);
     }
 
+    // --test-ip komutu (storage gerektirmez)
+    if (MODE === 'test-ip') {
+        await testInterfaces();
+        process.exit(0);
+    }
+
     if (MODE === 'date' && !DATE_FROM) {
         console.error('❌ Hata: --date seçeneği için en az bir tarih gerekli.');
         process.exit(1);
@@ -1236,6 +1421,38 @@ async function main() {
             console.log('\n🗑️  Redis verileri siliniyor...');
             const deleted = await storage.clearAll();
             console.log(`✅ ${deleted} key silindi.`);
+            await storage.close();
+            process.exit(0);
+        }
+
+        // --stats komutu
+        if (MODE === 'stats') {
+            if (OUTPUT_TYPE !== 'REDIS') {
+                console.error('❌ Hata: --stats sadece REDIS modunda çalışır.');
+                process.exit(1);
+            }
+            console.log('\n📊 Redis İstatistikleri\n');
+            const redisStats = await storage.getRedisStats();
+
+            console.log(`   Toplam kayıt sayısı: ${redisStats.totalRecords.toLocaleString()}`);
+            console.log(`   Toplam key sayısı: ${redisStats.totalKeys.toLocaleString()}`);
+            console.log(`   Bellek kullanımı: ${redisStats.memoryUsage}`);
+
+            if (redisStats.oldestRecord) {
+                console.log(`\n   En eski kayıt: ${redisStats.oldestRecord}`);
+            }
+            if (redisStats.newestRecord) {
+                console.log(`   En yeni kayıt: ${redisStats.newestRecord}`);
+            }
+
+            if (redisStats.typeBreakdown && Object.keys(redisStats.typeBreakdown).length > 0) {
+                console.log('\n   Tür dağılımı:');
+                for (const [type, count] of Object.entries(redisStats.typeBreakdown)) {
+                    console.log(`   • ${type}: ${count.toLocaleString()}`);
+                }
+            }
+
+            console.log('');
             await storage.close();
             process.exit(0);
         }
@@ -1365,7 +1582,8 @@ async function main() {
             const currentPage = Math.min(batchStart + PARALLEL_REQUESTS, pageCount);
             const pageIpMap = results.map(r => ({ page: r.page, ip: r.ip }));
             const stats = await storage.getStats();
-            showProgress(currentPage, pageCount, startTime, pageIpMap, stats);
+            const redisCount = OUTPUT_TYPE === 'REDIS' ? await storage.getTotalCount() : null;
+            showProgress(currentPage, pageCount, startTime, pageIpMap, stats, redisCount);
 
             // Ara kayıt
             if (batchStart % SAVE_INTERVAL < PARALLEL_REQUESTS) {
