@@ -1647,6 +1647,9 @@ async function main() {
     } finally {
         await storage.close();
     }
+
+    // İşlem başarıyla tamamlandı, programı sonlandır
+    process.exit(0);
 }
 
 // ============================================================================
