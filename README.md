@@ -36,7 +36,7 @@ cd usom-link-archive
 # Yardım göster
 node usom-scraper.js
 
-# Tüm arşivi çek (~444,000+ kayıt)
+# Tüm arşivi çek (~445,000+ kayıt)
 node usom-scraper.js --full
 
 # Yarıda kalan indirmeye devam et
@@ -57,6 +57,12 @@ node usom-scraper.js --export backup.json
 
 # Redis verilerini sil
 node usom-scraper.js --clear-redis
+
+# Redis istatistiklerini göster
+node usom-scraper.js --stats
+
+# Network interface'lerin çıkış IP'lerini test et
+node usom-scraper.js --test-ip
 ```
 
 ## 📊 Çıktı Formatı
@@ -141,11 +147,36 @@ Redis veri yapısı:
 - `usom:record:{id}` → HASH (kayıt detayları)
 - `usom:meta` → STRING (metadata)
 
-**Redis'ten JSON'a export:**
+**Redis komutları:**
 
 ```bash
+# JSON'a export et
 node usom-scraper.js --export                # usom-archive.json'a
 node usom-scraper.js --export backup.json    # Belirtilen dosyaya
+
+# İstatistikleri göster
+node usom-scraper.js --stats
+
+# Tüm verileri sil
+node usom-scraper.js --clear-redis
+```
+
+**`--stats` çıktısı:**
+
+```text
+📊 Redis İstatistikleri
+
+   Toplam kayıt sayısı: 445,182
+   Toplam key sayısı: 445,185
+   Bellek kullanımı: 256.5M
+
+   En eski kayıt: 2014-03-15
+   En yeni kayıt: 2025-11-28
+
+   Tür dağılımı:
+   • Zararlı Bağlantı: 52
+   • Malware: 28
+   • Phishing: 20
 ```
 
 ### 🌐 Multi-Interface Kullanımı
@@ -153,17 +184,38 @@ node usom-scraper.js --export backup.json    # Belirtilen dosyaya
 Rate limit'ten kaçınmak için birden fazla IP kullanabilirsiniz:
 
 ```env
-INTERFACES=10.0.0.5,10.0.0.6
+INTERFACES=192.168.1.10,192.168.1.11
 PARALLEL_REQUESTS=2
 ```
 
-Progress bar'da duplicate istatistikleri de gösterilir:
+Progress bar'da istatistikler gösterilir:
 
 ```text
-[150/22248] %0.7 | Geçen: 3dk 45s | Kalan: 8sa 32dk | 149→*.0.5, 150→*.0.6 | Yeni: 2847, Atlandı: 153
+[████████░░░░░░░░░░░░] %40.5 | 9,000/22,260 | 25dk kaldı | Redis: 180,000 | +9,000 (500 atlandı)
 ```
 
 > 💡 **İpucu**: `PARALLEL_REQUESTS` değerini interface sayısına eşitleyin.
+
+**Interface IP'lerini test etmek için:**
+
+```bash
+node usom-scraper.js --test-ip
+```
+
+Çıktı:
+
+```text
+📋 Tanımlı Interface'ler (3 adet):
+
+   [1/3] 192.168.1.10 → ✅ 203.0.113.10
+   [2/3] 192.168.1.11 → ✅ 203.0.113.11
+   [3/3] 192.168.1.12 → ✅ 203.0.113.12
+
+📊 ÖZET
+   Başarılı: 3/3
+   Benzersiz çıkış IP: 3
+   ✅ Farklı çıkış IP'leri doğrulandı!
+```
 
 ### 🔔 Webhook Bildirimleri
 
@@ -212,7 +264,8 @@ node usom-scraper.js --resume
 
 | Mod | Tahmini Süre | Kayıt Sayısı |
 |-----|--------------|--------------|
-| `--full` | ~9 saat | ~444,000+ |
+| `--full` | ~1-2 saat (7 IP ile) | ~445,000+ |
+| `--full` | ~9 saat (tek IP) | ~445,000+ |
 | `--resume` | Kaldığı yerden | Değişir |
 | `--update` | Birkaç dakika | Değişir |
 | `--date` (1 ay) | ~10-30 dakika | ~5,000-15,000 |
