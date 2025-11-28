@@ -1101,20 +1101,23 @@ function showProgress(current, total, startTime, pageIpMap, stats) {
     const elapsedSec = Math.floor((Date.now() - startTime) / 1000);
     const etaSec = current > 0 ? Math.floor((elapsedSec / current) * (total - current)) : 0;
 
-    let output = `\r[${current}/${total}] %${percent} | Geçen: ${formatTime(elapsedSec)} | Kalan: ${formatTime(etaSec)}`;
+    // Basit progress bar
+    const barWidth = 20;
+    const filled = Math.round((current / total) * barWidth);
+    const bar = '█'.repeat(filled) + '░'.repeat(barWidth - filled);
 
-    // Sayfa-IP eşleşmeleri
-    if (pageIpMap && pageIpMap.length > 0 && pageIpMap[0].ip) {
-        const ipMappings = pageIpMap.map(m => `${m.page}→${shortIp(m.ip)}`).join(', ');
-        output += ` | ${ipMappings}`;
-    }
+    let output = `\r[${bar}] %${percent} | ${current.toLocaleString()}/${total.toLocaleString()} | ${formatTime(etaSec)} kaldı`;
 
     // Duplicate istatistikleri
     if (stats) {
-        output += ` | Yeni: ${stats.added}, Atlandı: ${stats.skipped}`;
+        output += ` | +${stats.added.toLocaleString()}`;
+        if (stats.skipped > 0) {
+            output += ` (${stats.skipped.toLocaleString()} atlandı)`;
+        }
     }
 
-    output += '    ';
+    // Satırı temizle ve yaz
+    output += '          ';
     process.stdout.write(output);
 }
 
