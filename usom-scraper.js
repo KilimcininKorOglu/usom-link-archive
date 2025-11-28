@@ -897,21 +897,21 @@ class RedisStorage {
         // Toplam kayıt sayısı
         stats.totalRecords = await this.client.scard(`${this.prefix}ids`);
 
-        // Toplam key sayısı (SCAN ile)
-        let cursor = '0';
-        let keyCount = 0;
-        do {
-            const scanResult = await this.client._sendCommand(['SCAN', cursor, 'MATCH', `${this.prefix}*`, 'COUNT', '1000']);
-            cursor = scanResult[0];
-            keyCount += scanResult[1].length;
-        } while (cursor !== '0');
-        stats.totalKeys = keyCount;
+        // Toplam key sayısı - DBSIZE kullan (daha güvenilir)
+        try {
+            const dbsize = await this.client.dbsize();
+            stats.totalKeys = dbsize || 0;
+        } catch (e) {
+            stats.totalKeys = stats.totalRecords > 0 ? stats.totalRecords + 2 : 0; // ids + meta + records
+        }
 
         // Bellek kullanımı
         try {
             const info = await this.client._sendCommand(['INFO', 'memory']);
-            const match = info.match(/used_memory_human:([^\r\n]+)/);
-            if (match) stats.memoryUsage = match[1];
+            if (info && typeof info === 'string') {
+                const match = info.match(/used_memory_human:([^\r\n]+)/);
+                if (match) stats.memoryUsage = match[1].trim();
+            }
         } catch (e) { /* ignore */ }
 
         // Örnek kayıtlardan tarih ve tür bilgisi al
@@ -921,6 +921,10 @@ class RedisStorage {
             let oldest = null;
             let newest = null;
             const types = {};
+
+            if (!sampleIds || !Array.isArray(sampleIds)) {
+                return stats;
+            }
 
             for (const id of sampleIds) {
                 const record = await this.client.hgetall(`${this.prefix}record:${id}`);
